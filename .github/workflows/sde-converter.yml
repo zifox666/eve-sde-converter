@@ -68,10 +68,6 @@ jobs:
         echo "$SUMMARY" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
-    - name: Install sqlite3
-      if: steps.check_release.outputs.exists == 'false'
-      run: sudo apt-get update && sudo apt-get install -y sqlite3
-
     - name: Run conversion
       if: steps.check_release.outputs.exists == 'false'
       run: tsx src/index.ts convert

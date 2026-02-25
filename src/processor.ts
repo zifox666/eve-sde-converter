@@ -814,9 +814,9 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       { name: 'itemID', transform: (item) => item._key },
       { name: 'typeID', transform: (item, fileName) => {
         // Determine typeID based on file
-        if (fileName === 'mapSolarSystems.jsonl') return 3;
+        if (fileName === 'mapRegions.jsonl') return 3;
         if (fileName === 'mapConstellations.jsonl') return 4;
-        if (fileName === 'mapRegions.jsonl') return 5;
+        if (fileName === 'mapSolarSystems.jsonl') return 5;
         if (fileName === 'mapPlanets.jsonl') return item.typeID;
         if (fileName === 'mapMoons.jsonl') return item.typeID;
         if (fileName === 'mapAsteroidBelts.jsonl') return item.typeID;
