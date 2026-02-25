@@ -118,6 +118,120 @@ export function* readJsonl(filePath: string): Generator<any> {
   }
 }
 
+// Name cache for celestial objects (stars, planets, moons, belts, stations, stargates)
+// that don't have direct names in the JSONL data.
+// Populated by buildNameCache() before table processing begins.
+let celestialNameCache: Map<number, string> = new Map();
+
+/**
+ * Build a name cache for celestial objects in dependency order.
+ *
+ * Processing order:
+ * 1. Solar Systems (have name.en directly)
+ * 2. Stars: <solarSystemName>
+ * 3. Planets: <orbitName> <celestialIndex as Roman numeral>
+ * 4. Moons: <orbitName> - Moon <orbitIndex>
+ * 5. Asteroid Belts: <orbitName> - Asteroid Belt <orbitIndex>
+ * 6. NPC Corporations & Station Operations (auxiliary data)
+ * 7. Stations (useOperationName): <orbitName> - <corporationName> <operationName>
+ *    Stations (!useOperationName): <orbitName> - <corporationName>
+ * 8. Stargates: Stargate (<destinationSolarSystemName>)
+ */
+export function buildNameCache(unzippedDir: string): Map<number, string> {
+  const cache = new Map<number, string>();
+
+  // Step 1: Solar Systems - have names directly
+  const solarSystemsPath = path.join(unzippedDir, 'mapSolarSystems.jsonl');
+  if (fs.existsSync(solarSystemsPath)) {
+    for (const item of readJsonl(solarSystemsPath)) {
+      cache.set(item._key, item.name?.en || '');
+    }
+  }
+
+  // Step 2: Stars - name = <solarSystemName>
+  const starsPath = path.join(unzippedDir, 'mapStars.jsonl');
+  if (fs.existsSync(starsPath)) {
+    for (const item of readJsonl(starsPath)) {
+      const solarSystemName = cache.get(item.solarSystemID) || '';
+      cache.set(item._key, solarSystemName);
+    }
+  }
+
+  // Step 3: Planets - name = <orbitName> <celestialIndex as Roman numeral>
+  const planetsPath = path.join(unzippedDir, 'mapPlanets.jsonl');
+  if (fs.existsSync(planetsPath)) {
+    for (const item of readJsonl(planetsPath)) {
+      const orbitName = cache.get(item.orbitID) || '';
+      const romanIndex = convertToRoman(item.celestialIndex);
+      cache.set(item._key, `${orbitName} ${romanIndex}`);
+    }
+  }
+
+  // Step 4: Moons - name = <orbitName> - Moon <orbitIndex>
+  const moonsPath = path.join(unzippedDir, 'mapMoons.jsonl');
+  if (fs.existsSync(moonsPath)) {
+    for (const item of readJsonl(moonsPath)) {
+      const orbitName = cache.get(item.orbitID) || '';
+      cache.set(item._key, `${orbitName} - Moon ${item.orbitIndex}`);
+    }
+  }
+
+  // Step 5: Asteroid Belts - name = <orbitName> - Asteroid Belt <orbitIndex>
+  const beltsPath = path.join(unzippedDir, 'mapAsteroidBelts.jsonl');
+  if (fs.existsSync(beltsPath)) {
+    for (const item of readJsonl(beltsPath)) {
+      const orbitName = cache.get(item.orbitID) || '';
+      cache.set(item._key, `${orbitName} - Asteroid Belt ${item.orbitIndex}`);
+    }
+  }
+
+  // Step 6: Load auxiliary data for station names
+  const corpNames = new Map<number, string>();
+  const corpsPath = path.join(unzippedDir, 'npcCorporations.jsonl');
+  if (fs.existsSync(corpsPath)) {
+    for (const item of readJsonl(corpsPath)) {
+      corpNames.set(item._key, item.name?.en || '');
+    }
+  }
+
+  const operationNames = new Map<number, string>();
+  const opsPath = path.join(unzippedDir, 'stationOperations.jsonl');
+  if (fs.existsSync(opsPath)) {
+    for (const item of readJsonl(opsPath)) {
+      operationNames.set(item._key, item.operationName?.en || '');
+    }
+  }
+
+  // Step 7: Stations
+  //   useOperationName=true:  <orbitName> - <corporationName> <operationName>
+  //   useOperationName=false: <orbitName> - <corporationName>
+  const stationsPath = path.join(unzippedDir, 'npcStations.jsonl');
+  if (fs.existsSync(stationsPath)) {
+    for (const item of readJsonl(stationsPath)) {
+      const orbitName = cache.get(item.orbitID) || '';
+      const corpName = corpNames.get(item.ownerID) || '';
+      if (item.useOperationName) {
+        const opName = operationNames.get(item.operationID) || '';
+        cache.set(item._key, `${orbitName} - ${corpName} ${opName}`);
+      } else {
+        cache.set(item._key, `${orbitName} - ${corpName}`);
+      }
+    }
+  }
+
+  // Step 8: Stargates - name = Stargate (<destinationSolarSystemName>)
+  const stargatesPath = path.join(unzippedDir, 'mapStargates.jsonl');
+  if (fs.existsSync(stargatesPath)) {
+    for (const item of readJsonl(stargatesPath)) {
+      const destSystemName = cache.get(item.destination?.solarSystemID) || '';
+      cache.set(item._key, `Stargate (${destSystemName})`);
+    }
+  }
+
+  console.log(`Built name cache with ${cache.size} entries`);
+  return cache;
+}
+
 function generateInsertValues(item: any, mapping: any, fileName: string): string[] {
   const values = mapping.fields.map((field: string | { name: string; transform: (item: any, subItem?: any, fileName?: string) => any }) => {
     let fieldName: string;
@@ -484,6 +598,9 @@ export function processTable(tableName: string, unzippedDir: string): string[] {
 }
 
 export function generateMySqlDump(schemaPath: string, unzippedDir: string, outputPath: string, tableName?: string): void {
+  // Build name cache for celestial objects before processing any tables
+  celestialNameCache = buildNameCache(unzippedDir);
+
   let dump = fs.readFileSync(schemaPath, 'utf-8');
   const lines = dump.split('\n');
   const newLines: string[] = [];
@@ -727,17 +844,19 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       { name: 'y', transform: (item) => item.position?.y || null },
       { name: 'z', transform: (item) => item.position?.z || null },
       'radius',
-      { name: 'itemName', transform: (item) => item.name?.en || '' },
+      { name: 'itemName', transform: (item, fileName) => {
+        return item.name?.en || celestialNameCache.get(item._key) || '';
+      }},
       'security',
       'celestialIndex',
       'orbitIndex'
     ]
   },
   'invNames': {
-    files: ['types.jsonl', 'ancestries.jsonl', 'bloodlines.jsonl', 'categories.jsonl', 'certificates.jsonl', 'characterAttributes.jsonl', 'corporationActivities.jsonl', 'factions.jsonl', 'groups.jsonl', 'landmarks.jsonl', 'mapConstellations.jsonl', 'mapRegions.jsonl', 'mapSolarSystems.jsonl', 'marketGroups.jsonl', 'metaGroups.jsonl', 'npcCorporationDivisions.jsonl', 'npcCorporations.jsonl', 'planetSchematics.jsonl', 'races.jsonl'],
+    files: ['types.jsonl', 'ancestries.jsonl', 'bloodlines.jsonl', 'categories.jsonl', 'certificates.jsonl', 'characterAttributes.jsonl', 'corporationActivities.jsonl', 'factions.jsonl', 'groups.jsonl', 'landmarks.jsonl', 'mapConstellations.jsonl', 'mapRegions.jsonl', 'mapSolarSystems.jsonl', 'marketGroups.jsonl', 'metaGroups.jsonl', 'npcCorporationDivisions.jsonl', 'npcCorporations.jsonl', 'planetSchematics.jsonl', 'races.jsonl', 'mapStars.jsonl', 'mapPlanets.jsonl', 'mapMoons.jsonl', 'mapAsteroidBelts.jsonl', 'mapStargates.jsonl', 'npcStations.jsonl'],
     fields: [
       { name: 'itemID', transform: (item) => item._key },
-      { name: 'itemName', transform: (item) => item.name?.en || '' }
+      { name: 'itemName', transform: (item) => item.name?.en || celestialNameCache.get(item._key) || '' }
     ]
   },
   'invUniqueNames': {
@@ -972,7 +1091,7 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       'solarSystemID',
       { name: 'constellationID', transform: (item) => null },
       { name: 'regionID', transform: (item) => null },
-      { name: 'stationName', transform: (item) => null },
+      { name: 'stationName', transform: (item) => celestialNameCache.get(item._key) || null },
       { name: 'x', transform: (item) => item.position?.x || null },
       { name: 'y', transform: (item) => item.position?.y || null },
       { name: 'z', transform: (item) => item.position?.z || null },
@@ -1109,3 +1228,24 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
     fields: [] // Custom processing in processTable function
   },
 };
+
+function convertToRoman(num: number): string {
+  if (num <= 0 || num > 3999) throw new Error('Number out of range (must be 1-3999)');
+
+  const lookup = {
+    M: 1000, CM: 900, D: 500, CD: 400,
+    C: 100, XC: 90, L: 50, XL: 40,
+    X: 10, IX: 9, V: 5, IV: 4, I: 1
+  };
+  
+  let roman = '';
+  for (const i in lookup) {
+    const key = i as keyof typeof lookup;
+    while (num >= lookup[key]) {
+      roman += key;
+      num -= lookup[key];
+    }
+  }
+  return roman;
+}
+
