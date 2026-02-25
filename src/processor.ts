@@ -232,38 +232,86 @@ export function buildNameCache(unzippedDir: string): Map<number, string> {
   return cache;
 }
 
-function generateInsertValues(item: any, mapping: any, fileName: string): string[] {
-  const values = mapping.fields.map((field: string | { name: string; transform: (item: any, subItem?: any, fileName?: string) => any }) => {
-    let fieldName: string;
-    let value: any;
-    if (typeof field === 'string') {
-      fieldName = field;
-      if (fieldName === 'agentID' && item._key !== undefined) {
-        value = item._key;
-      } else if (fieldName === 'typeID' && item._key !== undefined) {
-        value = item._key;
-      } else {
-        value = item[fieldName];
-      }
-    } else {
-      fieldName = field.name;
-      value = field.transform(item, fileName);
-    }
-    if (value === null || value === undefined) {
-      return 'NULL';
-    }
-    if (typeof value === 'string') {
-      return `'${value.replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}'`;
-    }
-    if (typeof value === 'boolean') {
-      return value ? '1' : '0';
-    }
-    return value.toString();
-  });
-  return values;
+/** Raw SQL value – serialised to SQL syntax only when writing the dump. */
+export type SqlValue = string | number | boolean | null | undefined;
+
+/** Structured representation of a single INSERT row. */
+export interface InsertRow {
+  table: string;
+  columns: string[];
+  values: SqlValue[];
 }
 
-export function processTable(tableName: string, unzippedDir: string): string[] {
+/** Extract raw (un-escaped) values from a JSONL item according to a mapping. */
+function extractRawValues(
+  item: any,
+  mapping: any,
+  fileName: string,
+): SqlValue[] {
+  return mapping.fields.map(
+    (field: string | { name: string; transform: (item: any, subItem?: any, fileName?: string) => any }) => {
+      let value: SqlValue;
+      if (typeof field === 'string') {
+        const fieldName = field;
+        if (fieldName === 'agentID' && item._key !== undefined) {
+          value = item._key;
+        } else if (fieldName === 'typeID' && item._key !== undefined) {
+          value = item._key;
+        } else {
+          value = item[fieldName];
+        }
+      } else {
+        value = field.transform(item, fileName);
+      }
+      return value ?? null;
+    },
+  );
+}
+
+/** Escape a single value to its SQL literal representation. */
+function serializeSqlValue(value: SqlValue): string {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'string') {
+    return `'${value.replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}'`;
+  }
+  return value.toString();
+}
+
+/**
+ * Serialize structured InsertRow objects into batched multi-row INSERT
+ * statements. Rows sharing the same table + column list are merged; each
+ * batch is capped at `batchSize` rows to stay within MySQL's
+ * max_allowed_packet limit.
+ */
+export function serializeInsertRows(rows: InsertRow[], batchSize: number = 500): string[] {
+  if (rows.length === 0) return [];
+
+  // Group rows by "table + columns" signature, preserving insertion order.
+  const groups = new Map<string, InsertRow[]>();
+  for (const row of rows) {
+    const key = `${row.table}\0${row.columns.join('\0')}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(row);
+  }
+
+  const result: string[] = [];
+  for (const group of groups.values()) {
+    const { table, columns } = group[0];
+    const colsPart = columns.map(c => `\`${c}\``).join(', ');
+    const prefix = `INSERT INTO \`${table}\` (${colsPart}) VALUES `;
+    for (let i = 0; i < group.length; i += batchSize) {
+      const batch = group.slice(i, i + batchSize);
+      const valuesPart = batch
+        .map(row => `(${row.values.map(serializeSqlValue).join(', ')})`)
+        .join(',\n');
+      result.push(`${prefix}${valuesPart};`);
+    }
+  }
+  return result;
+}
+
+export function processTable(tableName: string, unzippedDir: string): InsertRow[] {
   const mapping = tableMappings[tableName];
   if (!mapping) {
     throw new Error(`No mapping for ${tableName}`);
@@ -303,19 +351,15 @@ export function processTable(tableName: string, unzippedDir: string): string[] {
         uniqueByName.set(itemName, entry);
       }
     }
-    const inserts: string[] = [];
+    const rows: InsertRow[] = [];
     for (const entry of uniqueByName.values()) {
-      const values = [
-        entry.itemID.toString(),
-        `'${entry.itemName.replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}'`,
-        entry.groupID.toString()
-      ];
-      inserts.push(`INSERT INTO \`invUniqueNames\` (\`itemID\`, \`itemName\`, \`groupID\`) VALUES (${values.join(', ')});`);
+      rows.push({ table: 'invUniqueNames', columns: ['itemID', 'itemName', 'groupID'], values: [entry.itemID, entry.itemName, entry.groupID] });
     }
-    return inserts;
+    return rows;
   } else if (tableName === 'invNames') {
     const processedItemIDs = new Set<number>();
-    const inserts: string[] = [];
+    const rows: InsertRow[] = [];
+    const columns = mapping.fields.map((f: any) => typeof f === 'string' ? f : f.name);
     for (const fileName of mapping.files) {
       const filePath = path.join(unzippedDir, fileName);
       if (!fs.existsSync(filePath)) {
@@ -326,18 +370,14 @@ export function processTable(tableName: string, unzippedDir: string): string[] {
         const itemID = item._key;
         if (!processedItemIDs.has(itemID)) {
           processedItemIDs.add(itemID);
-          const values = generateInsertValues(item, mapping, fileName);
-          inserts.push(`INSERT INTO \`${tableName}\` (${mapping.fields.map(f => {
-            const fieldName = typeof f === 'string' ? f : f.name;
-            return `\`${fieldName}\``;
-          }).join(', ')}) VALUES (${values.join(', ')});`);
+          rows.push({ table: tableName, columns, values: extractRawValues(item, mapping, fileName) });
         }
       }
     }
-    return inserts;
+    return rows;
   } else if (tableName === 'certMasteries') {
     // Special handling for double-nested masteries structure
-    const inserts: string[] = [];
+    const rows: InsertRow[] = [];
     for (const fileName of mapping.files) {
       const filePath = path.join(unzippedDir, fileName);
       if (!fs.existsSync(filePath)) {
@@ -345,23 +385,23 @@ export function processTable(tableName: string, unzippedDir: string): string[] {
         continue;
       }
       for (const item of readJsonl(filePath)) {
-        const typeID = item._key;
+        const typeID: number = item._key;
         if (Array.isArray(item._value)) {
           for (const masteryLevel of item._value) {
-            const level = masteryLevel._key;
+            const level: number = masteryLevel._key;
             if (Array.isArray(masteryLevel._value)) {
               for (const certID of masteryLevel._value) {
-                inserts.push(`INSERT INTO \`certMasteries\` (\`typeID\`, \`masteryLevel\`, \`certID\`) VALUES (${typeID}, ${level}, ${certID});`);
+                rows.push({ table: 'certMasteries', columns: ['typeID', 'masteryLevel', 'certID'], values: [typeID, level, certID] });
               }
             }
           }
         }
       }
     }
-    return inserts;
+    return rows;
   } else if (tableName === 'certSkills') {
     // Special handling for skillTypes with multiple cert levels
-    const inserts: string[] = [];
+    const rows: InsertRow[] = [];
     const certLevels = ['basic', 'standard', 'improved', 'advanced', 'elite'];
     const certLevelInts = [0, 1, 2, 3, 4];
     for (const fileName of mapping.files) {
@@ -371,154 +411,71 @@ export function processTable(tableName: string, unzippedDir: string): string[] {
         continue;
       }
       for (const item of readJsonl(filePath)) {
-        const certID = item._key;
+        const certID: number = item._key;
         if (Array.isArray(item.skillTypes)) {
           for (const skill of item.skillTypes) {
-            const skillID = skill._key;
+            const skillID: number = skill._key;
             for (let i = 0; i < certLevels.length; i++) {
               const levelName = certLevels[i];
               const levelInt = certLevelInts[i];
-              const skillLevel = skill[levelName] || 0;
-              inserts.push(`INSERT INTO \`certSkills\` (\`certID\`, \`skillID\`, \`certLevelInt\`, \`skillLevel\`, \`certLevelText\`) VALUES (${certID}, ${skillID}, ${levelInt}, ${skillLevel}, '${levelName}');`);
+              const skillLevel: number = skill[levelName] || 0;
+              rows.push({ table: 'certSkills', columns: ['certID', 'skillID', 'certLevelInt', 'skillLevel', 'certLevelText'], values: [certID, skillID, levelInt, skillLevel, levelName] });
             }
           }
         }
       }
     }
-    return inserts;
+    return rows;
   } else if (tableName === 'trnTranslations') {
     // Special handling for translation data from multiple sources
-    const inserts: string[] = [];
+    const rows: InsertRow[] = [];
+    const trnCols = ['tcID', 'keyID', 'languageID', 'text'];
     const languages = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'ru', 'zh'];
-    
+
     for (const fileName of mapping.files) {
       const filePath = path.join(unzippedDir, fileName);
       if (!fs.existsSync(filePath)) {
         console.warn(`File ${filePath} does not exist, skipping.`);
         continue;
       }
-      
+
       for (const item of readJsonl(filePath)) {
-        const keyID = item._key;
-        
+        const keyID: number = item._key;
+
+        const pushTranslations = (tcID: number, nameMap: Record<string, string>) => {
+          for (const lang of languages) {
+            if (nameMap[lang]) {
+              rows.push({ table: 'trnTranslations', columns: trnCols, values: [tcID, keyID, lang, nameMap[lang]] });
+            }
+          }
+        };
+
         // Handle different file types
         if (fileName === 'categories.jsonl' && item.name) {
-          // tcID=6: invCategories.categoryName
-          for (const lang of languages) {
-            if (item.name[lang]) {
-              const text = item.name[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-              inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (6, ${keyID}, '${lang}', '${text}');`);
-            }
-          }
+          pushTranslations(6, item.name);   // tcID=6: invCategories.categoryName
         } else if (fileName === 'groups.jsonl' && item.name) {
-          // tcID=7: invGroups.groupName
-          for (const lang of languages) {
-            if (item.name[lang]) {
-              const text = item.name[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-              inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (7, ${keyID}, '${lang}', '${text}');`);
-            }
-          }
+          pushTranslations(7, item.name);   // tcID=7: invGroups.groupName
         } else if (fileName === 'types.jsonl') {
-          // tcID=8: invTypes.typeName
-          if (item.name) {
-            for (const lang of languages) {
-              if (item.name[lang]) {
-                const text = item.name[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (8, ${keyID}, '${lang}', '${text}');`);
-              }
-            }
-          }
-          // tcID=33: invTypes.description
-          if (item.description) {
-            for (const lang of languages) {
-              if (item.description[lang]) {
-                const text = item.description[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (33, ${keyID}, '${lang}', '${text}');`);
-              }
-            }
-          }
-        } else if (fileName === 'metaGroups.jsonl' && item.name) {
-          // tcID=34: invMetaGroups.metaGroupName
-          for (const lang of languages) {
-            if (item.name[lang]) {
-              const text = item.name[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-              inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (34, ${keyID}, '${lang}', '${text}');`);
-            }
-          }
-          // tcID=35: invMetaGroups.description (if exists)
-          if (item.description) {
-            for (const lang of languages) {
-              if (item.description[lang]) {
-                const text = item.description[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (35, ${keyID}, '${lang}', '${text}');`);
-              }
-            }
-          }
+          if (item.name)        pushTranslations(8,  item.name);         // tcID=8:  invTypes.typeName
+          if (item.description) pushTranslations(33, item.description);  // tcID=33: invTypes.description
+        } else if (fileName === 'metaGroups.jsonl') {
+          if (item.name)        pushTranslations(34, item.name);         // tcID=34: invMetaGroups.metaGroupName
+          if (item.description) pushTranslations(35, item.description);  // tcID=35: invMetaGroups.description
         } else if (fileName === 'marketGroups.jsonl') {
-          // tcID=36: invMarketGroups.marketGroupName
-          if (item.name) {
-            for (const lang of languages) {
-              if (item.name[lang]) {
-                const text = item.name[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (36, ${keyID}, '${lang}', '${text}');`);
-              }
-            }
-          }
-          // tcID=37: invMarketGroups.description
-          if (item.description) {
-            for (const lang of languages) {
-              if (item.description[lang]) {
-                const text = item.description[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (37, ${keyID}, '${lang}', '${text}');`);
-              }
-            }
-          }
+          if (item.name)        pushTranslations(36, item.name);         // tcID=36: invMarketGroups.marketGroupName
+          if (item.description) pushTranslations(37, item.description);  // tcID=37: invMarketGroups.description
         } else if (fileName === 'typeBonus.jsonl') {
-          // tcID=1002: invTypes traits/bonus text
-          // does not fit the database schema, ignore
-          /*
-          // const typeID = item._key;
-          // Process roleBonuses
-          if (Array.isArray(item.roleBonuses)) {
-            const bonusID = item._key;
-            for (const bonus of item.roleBonuses) {
-              if (bonus.bonusText) {
-                for (const lang of languages) {
-                  if (bonus.bonusText[lang]) {
-                    const text = bonus.bonusText[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                    // Use a hash or unique identifier for each bonus text
-                    inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (1002, ${bonusID}, '${lang}', '${text}');`);
-                  }
-                }
-              }
-            }
-          }
-          
-          // Process types bonuses
-          if (Array.isArray(item.types)) {
-            for (const type of item.types) {
-              const bonusID = type._key;
-              if (Array.isArray(type._value)) {
-                for (const bonus of type._value) {
-                  if (bonus.bonusText) {
-                    for (const lang of languages) {
-                      if (bonus.bonusText[lang]) {
-                        const text = bonus.bonusText[lang].replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-                        // Use a hash or unique identifier for each bonus text
-                        inserts.push(`INSERT INTO \`trnTranslations\` (\`tcID\`, \`keyID\`, \`languageID\`, \`text\`) VALUES (1002, ${bonusID}, '${lang}', '${text}');`);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } */
+          // tcID=1002: invTypes traits/bonus text – does not fit the schema, ignore
         }
       }
     }
-    return inserts;
+    return rows;
   } else {
-    const inserts: string[] = [];
+    const rows: InsertRow[] = [];
+    const columns: string[] = mapping.fields.map((f: any) => typeof f === 'string' ? f : f.name);
+    const materialTypeIDIndex = tableName === 'invTypeMaterials'
+      ? columns.indexOf('materialTypeID')
+      : -1;
     for (const fileName of mapping.files) {
       const filePath = path.join(unzippedDir, fileName);
       if (!fs.existsSync(filePath)) {
@@ -532,68 +489,33 @@ export function processTable(tableName: string, unzippedDir: string): string[] {
         if (mapping.expand && Array.isArray(item[mapping.expand])) {
           // Expand array into multiple rows
           for (const subItem of item[mapping.expand]) {
-            let values = mapping.fields.map(field => {
-              let fieldName: string;
-              let value: any;
+            const values: SqlValue[] = mapping.fields.map((field: any) => {
+              let value: SqlValue;
               if (typeof field === 'string') {
-                fieldName = field;
+                const fieldName: string = field;
                 if (fieldName === 'agentID' && item._key !== undefined) {
                   value = item._key;
                 } else if (fieldName === 'typeID' && item._key !== undefined) {
                   value = item._key;
                 } else {
-                  value = item[fieldName] || subItem[fieldName];
+                  value = item[fieldName] ?? subItem[fieldName];
                 }
               } else {
-                fieldName = field.name;
                 value = field.transform(item, subItem, fileName);
               }
-              if (value === null || value === undefined) {
-                return 'NULL';
-              }
-              if (typeof value === 'string') {
-                return `'${value.replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}'`;
-              }
-              if (typeof value === 'boolean') {
-                return value ? '1' : '0';
-              }
-              return value.toString();
+              return value ?? null;
             });
-
-            if (tableName === 'invTypeMaterials') {
-              const materialTypeIDIndex = mapping.fields.findIndex(f => 
-                (typeof f === 'string' ? f : f.name) === 'materialTypeID'
-              );
-              if (materialTypeIDIndex !== -1 && values[materialTypeIDIndex] === 'NULL') {
-                continue;
-              }
-            }
-            
-            inserts.push(`INSERT INTO \`${tableName}\` (${mapping.fields.map(f => {
-              const fieldName = typeof f === 'string' ? f : f.name;
-              return `\`${fieldName}\``;
-            }).join(', ')}) VALUES (${values.join(', ')});`);
+            if (materialTypeIDIndex !== -1 && values[materialTypeIDIndex] == null) continue;
+            rows.push({ table: tableName, columns, values });
           }
         } else {
-          const values = generateInsertValues(item, mapping, fileName);
-
-          if (tableName === 'invTypeMaterials') {
-            const materialTypeIDIndex = mapping.fields.findIndex(f => 
-              (typeof f === 'string' ? f : f.name) === 'materialTypeID'
-            );
-            if (materialTypeIDIndex !== -1 && values[materialTypeIDIndex] === 'NULL') {
-              continue;
-            }
-          }
-          
-          inserts.push(`INSERT INTO \`${tableName}\` (${mapping.fields.map(f => {
-            const fieldName = typeof f === 'string' ? f : f.name;
-            return `\`${fieldName}\``;
-          }).join(', ')}) VALUES (${values.join(', ')});`);
+          const values = extractRawValues(item, mapping, fileName);
+          if (materialTypeIDIndex !== -1 && values[materialTypeIDIndex] == null) continue;
+          rows.push({ table: tableName, columns, values });
         }
       }
     }
-    return inserts;
+    return rows;
   }
 }
 
@@ -622,9 +544,9 @@ export function generateMySqlDump(schemaPath: string, unzippedDir: string, outpu
       }
       if (currentTableName && tableMappings[currentTableName] && (!tableName || currentTableName === tableName)) {
         try {
-          const inserts = processTable(currentTableName, unzippedDir);
-          for (const insert of inserts) {
-            newLines.push(insert);
+          const rows = processTable(currentTableName, unzippedDir);
+          for (const line of serializeInsertRows(rows)) {
+            newLines.push(line);
           }
         } catch (e: any) {
           console.warn(`Skipping ${currentTableName}: ${e.message}`);
