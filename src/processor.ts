@@ -466,9 +466,50 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
           if (item.description) pushTranslations(37, item.description);  // tcID=37: invMarketGroups.description
         } else if (fileName === 'typeBonus.jsonl') {
           // tcID=1002: invTypes traits/bonus text – does not fit the schema, ignore
+        } else if (fileName === 'mapSolarSystems.jsonl' && item.name) {
+          pushTranslations(40, item.name);   // tcID=40: mapSolarSystems.solarSystemName
+        } else if (fileName === 'mapConstellations.jsonl' && item.name) {
+          pushTranslations(41, item.name);   // tcID=41: mapConstellations.constellationName
+        } else if (fileName === 'mapRegions.jsonl' && item.name) {
+          pushTranslations(42, item.name);   // tcID=42: mapRegions.regionName
         }
       }
     }
+
+    // Read zh translations from system_zh.csv (GBK-encoded, tab-separated)
+    // Columns: solarSystemID, solarSystemName, constellationID, constellationName, regionID, regionName
+    // tcID: solarSystem=40, constellation=41, region=42
+    const csvPath = path.join(__dirname, 'system_zh.csv');
+    if (fs.existsSync(csvPath)) {
+      const buffer = fs.readFileSync(csvPath);
+      const text = new TextDecoder('gbk').decode(buffer);
+      const constellationSeen = new Set<number>();
+      const regionSeen = new Set<number>();
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        const cols = line.split('\t');
+        const solarSystemID = parseInt(cols[0], 10);
+        const solarSystemName = cols[1]?.trim();
+        const constellationID = parseInt(cols[2], 10);
+        const constellationName = cols[3]?.trim();
+        const regionID = parseInt(cols[4], 10);
+        const regionName = cols[5]?.trim();
+        if (solarSystemID && solarSystemName) {
+          rows.push({ table: 'trnTranslations', columns: trnCols, values: [40, solarSystemID, 'zh', solarSystemName] });
+        }
+        if (constellationID && constellationName && !constellationSeen.has(constellationID)) {
+          constellationSeen.add(constellationID);
+          rows.push({ table: 'trnTranslations', columns: trnCols, values: [41, constellationID, 'zh', constellationName] });
+        }
+        if (regionID && regionName && !regionSeen.has(regionID)) {
+          regionSeen.add(regionID);
+          rows.push({ table: 'trnTranslations', columns: trnCols, values: [42, regionID, 'zh', regionName] });
+        }
+      }
+    } else {
+      console.warn(`system_zh.csv not found at ${csvPath}, skipping zh translations for solar systems/constellations/regions.`);
+    }
+
     return rows;
   } else {
     const rows: InsertRow[] = [];
@@ -1146,7 +1187,7 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
     fields: [] // Custom processing in processTable function
   },
   'trnTranslations': {
-    files: ['categories.jsonl', 'groups.jsonl', 'types.jsonl', 'metaGroups.jsonl', 'marketGroups.jsonl', 'typeBonus.jsonl'],
+    files: ['categories.jsonl', 'groups.jsonl', 'types.jsonl', 'metaGroups.jsonl', 'marketGroups.jsonl', 'typeBonus.jsonl', 'mapSolarSystems.jsonl', 'mapConstellations.jsonl', 'mapRegions.jsonl'],
     fields: [] // Custom processing in processTable function
   },
 };

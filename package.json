@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "postbuild": "node -e \"require('fs').copyFileSync('src/system_zh.csv', 'dist/system_zh.csv')\"",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts"
   },
