@@ -431,6 +431,15 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
     const rows: InsertRow[] = [];
     const trnCols = ['tcID', 'keyID', 'languageID', 'text'];
     const languages = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'ru', 'zh'];
+    // avoid duplicates: track combination of tcID,keyID,languageID
+    const seen = new Set<string>();
+
+    function addRow(tcID: number, keyID: number, lang: string, text: string) {
+      const key = `${tcID}|${keyID}|${lang}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({ table: 'trnTranslations', columns: trnCols, values: [tcID, keyID, lang, text] });
+    }
 
     for (const fileName of mapping.files) {
       const filePath = path.join(unzippedDir, fileName);
@@ -445,7 +454,7 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
         const pushTranslations = (tcID: number, nameMap: Record<string, string>) => {
           for (const lang of languages) {
             if (nameMap[lang]) {
-              rows.push({ table: 'trnTranslations', columns: trnCols, values: [tcID, keyID, lang, nameMap[lang]] });
+              addRow(tcID, keyID, lang, nameMap[lang]);
             }
           }
         };
@@ -495,15 +504,15 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
         const regionID = parseInt(cols[4], 10);
         const regionName = cols[5]?.trim();
         if (solarSystemID && solarSystemName) {
-          rows.push({ table: 'trnTranslations', columns: trnCols, values: [40, solarSystemID, 'zh', solarSystemName] });
+          addRow(40, solarSystemID, 'zh', solarSystemName);
         }
         if (constellationID && constellationName && !constellationSeen.has(constellationID)) {
           constellationSeen.add(constellationID);
-          rows.push({ table: 'trnTranslations', columns: trnCols, values: [41, constellationID, 'zh', constellationName] });
+          addRow(41, constellationID, 'zh', constellationName);
         }
         if (regionID && regionName && !regionSeen.has(regionID)) {
           regionSeen.add(regionID);
-          rows.push({ table: 'trnTranslations', columns: trnCols, values: [42, regionID, 'zh', regionName] });
+          addRow(42, regionID, 'zh', regionName);
         }
       }
     } else {
