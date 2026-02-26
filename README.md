@@ -51,6 +51,7 @@ node dist/index.js
 ```
 
 The tool will:
+
 1. Check for the latest SDE build number
 2. Skip processing if the build is already tagged (in GitHub Actions)
 3. Download and extract the JSONL archive
@@ -62,6 +63,22 @@ The tool will:
 - `sde.sql.bz2` and `sde.sql.zip`: Compressed MySQL dump files
 - `sde.sqlite.zip`: Compressed SQLite database file
 - `sqlite.sql`: Uncompressed SQLite SQL file
+
+## TC ID
+
+  -------
+
+| TC ID | Description |
+| :-------: | :-------------: |
+| 6 | invCategories.categoryName |
+| 7 | invGroups.groupName |
+| 8 | invTypes.typeName |
+| 33 | invMetaGroups.description |
+| 34 | invMetaGroups.metaGroupName |
+| 37 | invMarketGroups.marketGroupName |
+| 40 | mapSolarSystems.name |
+| 41 | mapConstellations.name |
+| 42 | mapRegions.name |
 
 ## Project Structure
 
