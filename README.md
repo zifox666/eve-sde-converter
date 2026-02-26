@@ -66,8 +66,6 @@ The tool will:
 
 ## TC ID
 
-  -------
-
 | TC ID | Description |
 | :-------: | :-------------: |
 | 6 | invCategories.categoryName |
