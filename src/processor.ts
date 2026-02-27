@@ -281,10 +281,10 @@ function serializeSqlValue(value: SqlValue): string {
 /**
  * Serialize structured InsertRow objects into batched multi-row INSERT
  * statements. Rows sharing the same table + column list are merged; each
- * batch is capped at `batchSize` rows to stay within MySQL's
+ * batch is capped by `maxContentLength` (bytes) to stay within MySQL's
  * max_allowed_packet limit.
  */
-export function serializeInsertRows(rows: InsertRow[], batchSize: number = 500): string[] {
+export function serializeInsertRows(rows: InsertRow[], maxContentLength: number = 800 * 1024): string[] {
   if (rows.length === 0) return [];
 
   // Group rows by "table + columns" signature, preserving insertion order.
@@ -300,13 +300,29 @@ export function serializeInsertRows(rows: InsertRow[], batchSize: number = 500):
     const { table, columns } = group[0];
     const colsPart = columns.map(c => `\`${c}\``).join(', ');
     const prefix = `INSERT INTO \`${table}\` (${colsPart}) VALUES `;
-    for (let i = 0; i < group.length; i += batchSize) {
-      const batch = group.slice(i, i + batchSize);
-      const valuesPart = batch
-        .map(row => `(${row.values.map(serializeSqlValue).join(', ')})`)
-        .join(',\n');
-      result.push(`${prefix}${valuesPart};`);
+    const prefixLen = Buffer.byteLength(prefix, 'utf8') + 1; // +1 for ';'
+
+    let valueParts: string[] = [];
+    let currentLen = prefixLen;
+
+    const flush = () => {
+      if (valueParts.length === 0) return;
+      result.push(`${prefix}${valueParts.join(',\n')};`);
+      valueParts = [];
+      currentLen = prefixLen;
+    };
+
+    for (const row of group) {
+      const valuePart = `(${row.values.map(serializeSqlValue).join(', ')})`;
+      // separator: ',\n' = 2 bytes for all but the first entry
+      const addLen = Buffer.byteLength(valuePart, 'utf8') + 2;
+      if (valueParts.length > 0 && currentLen + addLen > maxContentLength) {
+        flush();
+      }
+      valueParts.push(valuePart);
+      currentLen += addLen;
     }
+    flush();
   }
   return result;
 }
