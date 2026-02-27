@@ -431,6 +431,15 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
     const rows: InsertRow[] = [];
     const trnCols = ['tcID', 'keyID', 'languageID', 'text'];
     const languages = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'ru', 'zh'];
+    // avoid duplicates: track combination of tcID,keyID,languageID
+    const seen = new Set<string>();
+
+    function addRow(tcID: number, keyID: number, lang: string, text: string) {
+      const key = `${tcID}|${keyID}|${lang}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({ table: 'trnTranslations', columns: trnCols, values: [tcID, keyID, lang, text] });
+    }
 
     for (const fileName of mapping.files) {
       const filePath = path.join(unzippedDir, fileName);
@@ -445,7 +454,7 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
         const pushTranslations = (tcID: number, nameMap: Record<string, string>) => {
           for (const lang of languages) {
             if (nameMap[lang]) {
-              rows.push({ table: 'trnTranslations', columns: trnCols, values: [tcID, keyID, lang, nameMap[lang]] });
+              addRow(tcID, keyID, lang, nameMap[lang]);
             }
           }
         };
@@ -466,9 +475,16 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
           if (item.description) pushTranslations(37, item.description);  // tcID=37: invMarketGroups.description
         } else if (fileName === 'typeBonus.jsonl') {
           // tcID=1002: invTypes traits/bonus text – does not fit the schema, ignore
+        } else if (fileName === 'mapSolarSystems.jsonl' && item.name) {
+          pushTranslations(40, item.name);   // tcID=40: mapSolarSystems.solarSystemName
+        } else if (fileName === 'mapConstellations.jsonl' && item.name) {
+          pushTranslations(41, item.name);   // tcID=41: mapConstellations.constellationName
+        } else if (fileName === 'mapRegions.jsonl' && item.name) {
+          pushTranslations(42, item.name);   // tcID=42: mapRegions.regionName
         }
       }
     }
+
     return rows;
   } else {
     const rows: InsertRow[] = [];
@@ -1146,7 +1162,7 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
     fields: [] // Custom processing in processTable function
   },
   'trnTranslations': {
-    files: ['categories.jsonl', 'groups.jsonl', 'types.jsonl', 'metaGroups.jsonl', 'marketGroups.jsonl', 'typeBonus.jsonl'],
+    files: ['categories.jsonl', 'groups.jsonl', 'types.jsonl', 'metaGroups.jsonl', 'marketGroups.jsonl', 'typeBonus.jsonl', 'mapSolarSystems.jsonl', 'mapConstellations.jsonl', 'mapRegions.jsonl'],
     fields: [] // Custom processing in processTable function
   },
 };
