@@ -327,7 +327,7 @@ export function serializeInsertRows(rows: InsertRow[], maxContentLength: number 
   return result;
 }
 
-export function processTable(tableName: string, unzippedDir: string): InsertRow[] {
+export function processTable(tableName: string, unzippedDir: string, changedKeys?: Set<number>): InsertRow[] {
   const mapping = tableMappings[tableName];
   if (!mapping) {
     throw new Error(`No mapping for ${tableName}`);
@@ -402,6 +402,7 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
       }
       for (const item of readJsonl(filePath)) {
         const typeID: number = item._key;
+        if (changedKeys && !changedKeys.has(typeID)) continue;
         if (Array.isArray(item._value)) {
           for (const masteryLevel of item._value) {
             const level: number = masteryLevel._key;
@@ -428,6 +429,7 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
       }
       for (const item of readJsonl(filePath)) {
         const certID: number = item._key;
+        if (changedKeys && !changedKeys.has(certID)) continue;
         if (Array.isArray(item.skillTypes)) {
           for (const skill of item.skillTypes) {
             const skillID: number = skill._key;
@@ -466,6 +468,7 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
 
       for (const item of readJsonl(filePath)) {
         const keyID: number = item._key;
+        if (changedKeys && !changedKeys.has(keyID)) continue;
 
         const pushTranslations = (tcID: number, nameMap: Record<string, string>) => {
           for (const lang of languages) {
@@ -515,6 +518,7 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
         continue;
       }
       for (const item of readJsonl(filePath)) {
+        if (changedKeys && !changedKeys.has(item._key)) continue;
         if (mapping.filter && !mapping.filter(item)) {
           continue;
         }
@@ -601,6 +605,282 @@ export function convertToPgsql(mysqlDumpPath: string, pgsqlPath: string, mysql2p
   const command = `awk -f ${mysql2pgsqlPath} ${mysqlDumpPath} > ${pgsqlPath}`;
   console.log(command);
   execSync(command, { stdio: 'inherit' });
+}
+
+// ─── Schema info ──────────────────────────────────────────────────────────────
+
+export interface SchemaTableInfo {
+  /** Primary key column names (empty if no PK defined) */
+  primaryKey: string[];
+  /** All column names in declaration order */
+  allColumns: string[];
+}
+
+/**
+ * Parse schema.sql to extract primary key and column info per table.
+ */
+export function parseSchemaInfo(schemaPath: string): Map<string, SchemaTableInfo> {
+  const schema = fs.readFileSync(schemaPath, 'utf-8');
+  const result = new Map<string, SchemaTableInfo>();
+  const re = /CREATE TABLE `([^`]+)` \(([\s\S]*?)\) ENGINE/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(schema)) !== null) {
+    const tableName = m[1];
+    const body = m[2];
+    const allColumns: string[] = [];
+    const colRe = /^\s+`([^`]+)`\s+/gm;
+    let colM: RegExpExecArray | null;
+    while ((colM = colRe.exec(body)) !== null) allColumns.push(colM[1]);
+    const pkMatch = body.match(/PRIMARY KEY\s*\(([^)]+)\)/i);
+    const primaryKey: string[] = pkMatch
+      ? pkMatch[1].split(',').map(s => s.trim().replace(/`/g, ''))
+      : [];
+    result.set(tableName, { primaryKey, allColumns });
+  }
+  return result;
+}
+
+// ─── Incremental helpers ───────────────────────────────────────────────────────
+
+/**
+ * Fetch the changes JSONL for a given build number.
+ * Returns a map of JSONL-basename (e.g. 'types') → Set of changed _key values.
+ */
+export async function fetchChangedKeysByFile(buildNumber: number): Promise<Map<string, Set<number>>> {
+  const url = `https://developers.eveonline.com/static-data/tranquility/changes/${buildNumber}.jsonl`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(30000),
+    dispatcher: getProxyAgent() as any,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  const text = await response.text();
+  const result = new Map<string, Set<number>>();
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    const json = JSON.parse(line);
+    if (!json.changed || !Array.isArray(json.changed)) continue;
+    result.set(json._key as string, new Set<number>(json.changed as number[]));
+  }
+  return result;
+}
+
+/**
+ * Map changed-by-file keys to per-SQL-table changed key sets.
+ * Tables reading from multiple files get the union of all their changed keys.
+ * NOTE: Must be called after tableMappings is defined; used lazily in generateIncrementalDump.
+ */
+export function buildTableChangedKeys(
+  changedByFile: Map<string, Set<number>>,
+): Map<string, Set<number>> {
+  const result = new Map<string, Set<number>>();
+  for (const [tableName, mapping] of Object.entries(tableMappings)) {
+    const tableKeys = new Set<number>();
+    for (const fileName of mapping.files) {
+      const basename = fileName.replace(/\.jsonl$/, '');
+      const changed = changedByFile.get(basename);
+      if (changed) for (const k of changed) tableKeys.add(k);
+    }
+    if (tableKeys.size > 0) result.set(tableName, tableKeys);
+  }
+  return result;
+}
+
+/**
+ * Serialize rows as batched MySQL REPLACE INTO statements.
+ * Identical batching / packet-size logic as serializeInsertRows.
+ */
+export function serializeReplaceRows(rows: InsertRow[], maxContentLength: number = 800 * 1024): string[] {
+  if (rows.length === 0) return [];
+  const groups = new Map<string, InsertRow[]>();
+  for (const row of rows) {
+    const key = `${row.table}\0${row.columns.join('\0')}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(row);
+  }
+  const result: string[] = [];
+  for (const group of groups.values()) {
+    const { table, columns } = group[0];
+    const colsPart = columns.map(c => `\`${c}\``).join(', ');
+    const prefix = `REPLACE INTO \`${table}\` (${colsPart}) VALUES `;
+    const prefixLen = Buffer.byteLength(prefix, 'utf8') + 1;
+    let valueParts: string[] = [];
+    let currentLen = prefixLen;
+    const flush = () => {
+      if (valueParts.length === 0) return;
+      result.push(`${prefix}${valueParts.join(',\n')};`);
+      valueParts = []; currentLen = prefixLen;
+    };
+    for (const row of group) {
+      const valuePart = `(${row.values.map(serializeSqlValue).join(', ')})`;
+      const addLen = Buffer.byteLength(valuePart, 'utf8') + 2;
+      if (valueParts.length > 0 && currentLen + addLen > maxContentLength) flush();
+      valueParts.push(valuePart);
+      currentLen += addLen;
+    }
+    flush();
+  }
+  return result;
+}
+
+/**
+ * Serialize rows as PostgreSQL upsert statements:
+ *   INSERT INTO "table" (cols) VALUES (...)
+ *   ON CONFLICT (pk_cols) DO UPDATE SET col=EXCLUDED.col, ...;
+ * Tables without a PK use ON CONFLICT DO NOTHING.
+ */
+export function serializeUpsertRowsPgsql(
+  rows: InsertRow[],
+  schemaInfo: Map<string, SchemaTableInfo>,
+  maxContentLength: number = 800 * 1024,
+): string[] {
+  if (rows.length === 0) return [];
+  const groups = new Map<string, InsertRow[]>();
+  for (const row of rows) {
+    const key = `${row.table}\0${row.columns.join('\0')}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(row);
+  }
+  const result: string[] = [];
+  for (const group of groups.values()) {
+    const { table, columns } = group[0];
+    const info = schemaInfo.get(table);
+    const pkCols = info?.primaryKey ?? [];
+    const colsPart = columns.map(c => `"${c}"`).join(', ');
+    const pkSet = new Set(pkCols);
+    const nonPkCols = columns.filter(c => !pkSet.has(c));
+    let conflictClause: string;
+    if (pkCols.length > 0 && nonPkCols.length > 0) {
+      const pkPart = pkCols.map(c => `"${c}"`).join(', ');
+      const setPart = nonPkCols.map(c => `"${c}"=EXCLUDED."${c}"`).join(', ');
+      conflictClause = `ON CONFLICT (${pkPart}) DO UPDATE SET ${setPart}`;
+    } else if (pkCols.length > 0) {
+      conflictClause = `ON CONFLICT (${pkCols.map(c => `"${c}"`).join(', ')}) DO NOTHING`;
+    } else {
+      conflictClause = `ON CONFLICT DO NOTHING`;
+    }
+    const prefix = `INSERT INTO "${table}" (${colsPart}) VALUES `;
+    const suffix = `\n${conflictClause};`;
+    const baseLen = Buffer.byteLength(prefix, 'utf8') + Buffer.byteLength(suffix, 'utf8');
+    let valueParts: string[] = [];
+    let currentLen = baseLen;
+    const flush = () => {
+      if (valueParts.length === 0) return;
+      result.push(`${prefix}${valueParts.join(',\n')}${suffix}`);
+      valueParts = []; currentLen = baseLen;
+    };
+    for (const row of group) {
+      const valuePart = `(${row.values.map(serializeSqlValue).join(', ')})`;
+      const addLen = Buffer.byteLength(valuePart, 'utf8') + 2;
+      if (valueParts.length > 0 && currentLen + addLen > maxContentLength) flush();
+      valueParts.push(valuePart);
+      currentLen += addLen;
+    }
+    flush();
+  }
+  return result;
+}
+
+/**
+ * Tables that require full regeneration because they apply cross-row
+ * deduplication logic (filtering them by changedKeys would produce incorrect
+ * results). They are included in the incremental dump in full whenever any
+ * of their source files has changes.
+ */
+const FULL_REGEN_TABLES = new Set(['invUniqueNames', 'invNames']);
+
+/**
+ * Generate incremental MySQL + PostgreSQL dump files containing only changed rows.
+ *
+ * Uses the official EVE SDE changes API:
+ *   GET /static-data/tranquility/changes/{buildNumber}.jsonl
+ * Returns: { _key: "fileBasename", changed: [id, id, ...] }
+ *
+ * Strategy:
+ * - Regular tables: REPLACE INTO / INSERT ... ON CONFLICT DO UPDATE for changed rows only.
+ * - FULL_REGEN_TABLES: full regeneration via REPLACE INTO when source files change.
+ * - No DELETE statements (EVE unpublishes items instead of deleting them).
+ */
+export async function generateIncrementalDump(
+  buildNumber: number,
+  schemaPath: string,
+  unzippedDir: string,
+  mysqlOutPath: string,
+  pgsqlOutPath: string,
+): Promise<void> {
+  console.log('Fetching changed keys from EVE SDE changes API...');
+  const changedByFile = await fetchChangedKeysByFile(buildNumber);
+  const tableChangedKeys = buildTableChangedKeys(changedByFile);
+
+  const totalChangedTables = tableChangedKeys.size;
+  const totalChangedRows = [...tableChangedKeys.values()].reduce((s, v) => s + v.size, 0);
+  console.log(`Changes: ${totalChangedTables} tables, ~${totalChangedRows} rows`);
+
+  celestialNameCache = buildNameCache(unzippedDir);
+  const schemaInfo = parseSchemaInfo(schemaPath);
+
+  const mysqlLines: string[] = [
+    '-- Incremental EVE SDE MySQL dump',
+    `-- Build: ${buildNumber}`,
+    `-- Generated: ${new Date().toISOString()}`,
+    '/*!40101 SET NAMES utf8 */;',
+    '/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;',
+    "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;",
+    '',
+  ];
+  const pgsqlLines: string[] = [
+    '-- Incremental EVE SDE PostgreSQL dump',
+    `-- Build: ${buildNumber}`,
+    `-- Generated: ${new Date().toISOString()}`,
+    "SET client_encoding = 'UTF8';",
+    'SET standard_conforming_strings = on;',
+    'BEGIN;',
+    '',
+  ];
+
+  for (const tableName of Object.keys(tableMappings)) {
+    const isFullRegen = FULL_REGEN_TABLES.has(tableName);
+    let changedKeys: Set<number> | undefined;
+
+    if (isFullRegen) {
+      const hasChanges = tableMappings[tableName].files.some(
+        f => changedByFile.has(f.replace(/\.jsonl$/, '')),
+      );
+      if (!hasChanges) continue;
+      changedKeys = undefined; // processTable processes all rows
+    } else {
+      changedKeys = tableChangedKeys.get(tableName);
+      if (!changedKeys || changedKeys.size === 0) continue;
+    }
+
+    let rows: InsertRow[];
+    try {
+      rows = processTable(tableName, unzippedDir, changedKeys);
+    } catch (e: any) {
+      console.warn(`Skipping incremental ${tableName}: ${e.message}`);
+      continue;
+    }
+    if (rows.length === 0) continue;
+
+    console.log(`  ${tableName}: ${rows.length} rows`);
+
+    mysqlLines.push(`-- Table \`${tableName}\``);
+    for (const stmt of serializeReplaceRows(rows)) mysqlLines.push(stmt);
+
+    pgsqlLines.push(`-- Table "${tableName}"`);
+    for (const stmt of serializeUpsertRowsPgsql(rows, schemaInfo)) pgsqlLines.push(stmt);
+  }
+
+  mysqlLines.push('');
+  mysqlLines.push('/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;');
+  mysqlLines.push('/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;');
+
+  pgsqlLines.push('');
+  pgsqlLines.push('COMMIT;');
+
+  fs.writeFileSync(mysqlOutPath, mysqlLines.join('\n'));
+  fs.writeFileSync(pgsqlOutPath, pgsqlLines.join('\n'));
+  console.log(`Incremental MySQL dump: ${mysqlOutPath}`);
+  console.log(`Incremental PostgreSQL dump: ${pgsqlOutPath}`);
 }
 
 export const tableMappings: Record<string, { files: string[]; fields: Array<string | { name: string; transform: (item: any, subItem?: any, fileName?: string) => any }>; expand?: string; filter?: (item: any) => boolean }> = {

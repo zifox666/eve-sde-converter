@@ -8,6 +8,7 @@ import {
   downloadZip,
   unzipFile,
   generateMySqlDump,
+  generateIncrementalDump,
   convertToSqlite,
   convertToPgsql,
   getChangeSummary
@@ -126,6 +127,32 @@ program.command('get-change-summary <buildNumber>')
       console.log(summary);
     } catch (error) {
       console.error('Error getting change summary:', error);
+      process.exit(1);
+    }
+  });
+
+program.command('increment <buildNumber>')
+  .description('Generate incremental dump (changed rows only) for the given build number')
+  .option('--unzipped-dir <path>', 'Path to unzipped JSONL directory')
+  .action(async (buildNumber: string, options) => {
+    try {
+      const buildNum = parseInt(buildNumber, 10);
+      const unzippedDir = options.unzippedDir || path.join(__dirname, '..', 'refs', 'unzipped');
+      const schemaPath = path.join(__dirname, 'schema.sql');
+
+      const outputDir = path.join(__dirname, '..', 'output');
+      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+      const mysqlOutPath = path.join(outputDir, 'sde-incremental.sql');
+      const pgsqlOutPath = path.join(outputDir, 'sde-incremental-postgres.sql');
+
+      await generateIncrementalDump(buildNum, schemaPath, unzippedDir, mysqlOutPath, pgsqlOutPath);
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Error during incremental dump:', error, error.stack);
+      } else {
+        console.error('Unknown error during incremental dump:', error);
+      }
       process.exit(1);
     }
   });
