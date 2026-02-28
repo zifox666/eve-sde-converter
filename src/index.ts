@@ -9,6 +9,7 @@ import {
   unzipFile,
   generateMySqlDump,
   convertToSqlite,
+  convertToPgsql,
   getChangeSummary
 } from './processor';
 
@@ -80,6 +81,13 @@ program.command('convert')
 
       console.log('Converting to SQLite...');
       convertToSqlite(mysqlDumpPath, sqlitePath, mysql2sqlitePath);
+
+      // Convert to PostgreSQL
+      const pgsqlPath = path.join(__dirname, '..', 'output', 'sde-postgres.sql');
+      const mysql2pgsqlPath = path.join(__dirname, '..', 'utils', 'mysql2pgsql');
+
+      console.log('Converting to PostgreSQL...');
+      convertToPgsql(mysqlDumpPath, pgsqlPath, mysql2pgsqlPath);
 
       console.log('Conversion completed successfully!');
     } catch (error) {

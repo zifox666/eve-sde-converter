@@ -1,0 +1,286 @@
+#!/usr/bin/awk -f
+
+# mysql2pgsql - Convert MySQL dump to PostgreSQL compatible SQL
+# Based on mysql2sqlite by @esperlu, @artemyk, @gkuenning, @dumblob
+# Adapted for PostgreSQL output
+
+function printerr( s ){ print s | "cat >&2" }
+
+BEGIN {
+  if( ARGC != 2 ){
+    printerr( \
+      "USAGE:\n"\
+      "       mysql2pgsql dump_mysql.sql > dump_pgsql.sql\n" \
+      "       OR\n" \
+      "       mysql2pgsql dump_mysql.sql | psql -d dbname\n" )
+    no_END = 1
+    exit 1
+  }
+
+  FS=",$"
+  print "-- Converted from MySQL dump to PostgreSQL"
+  print "SET client_encoding = 'UTF8';"
+  print "SET standard_conforming_strings = on;"
+  print "BEGIN;"
+}
+
+# CREATE TRIGGER statements have funny commenting. Remember we are in trigger.
+/^\/\*.*(CREATE.*TRIGGER|create.*trigger)/ {
+  gsub( /^.*(TRIGGER|trigger)/, "CREATE TRIGGER" )
+  print
+  inTrigger = 1
+  next
+}
+# The end of CREATE TRIGGER has a stray comment terminator
+/(END|end) \*\/;;/ { gsub( /\*\//, "" ); print; inTrigger = 0; next }
+# The rest of triggers just get passed through
+inTrigger != 0 { print; next }
+
+# CREATE VIEW looks like a TABLE in comments
+/^\/\*.*(CREATE.*TABLE|create.*table)/ {
+  inView = 1
+  next
+}
+# end of CREATE VIEW
+/^(\).*(ENGINE|engine).*\*\/;)/ {
+  inView = 0
+  next
+}
+# content of CREATE VIEW
+inView != 0 { next }
+
+# skip MySQL-specific comments (/*!40xxx ... */;)
+/^\/\*![0-9]+ .*\*\/;$/ { next }
+# skip inline MySQL comments that span entire line
+/^\/\*!/ { next }
+
+# skip LOCK/UNLOCK TABLES
+/^(LOCK TABLES|lock tables|UNLOCK TABLES|unlock tables)/ { next }
+
+# skip CREATE DATABASE
+/^(CREATE DATABASE|create database)/ { next }
+
+# skip PARTITION statements
+/^ *[(]?(PARTITION|partition) +[^ ]+/ { next }
+
+# Handle DROP TABLE - convert backticks to double quotes
+/^DROP TABLE IF EXISTS/ {
+  gsub( /`/, "\"" )
+  # PostgreSQL uses CASCADE for dependent objects
+  gsub( /;$/, " CASCADE;" )
+  print
+  next
+}
+
+# print all INSERT lines
+( /^ *\(/ && /\) *[,;] *$/ ) || /^(INSERT|insert|REPLACE|replace)/ {
+  # Convert backticks to double quotes in INSERT statements
+  gsub( /`/, "\"" )
+
+  # Handle REPLACE INTO -> INSERT INTO ... ON CONFLICT DO UPDATE (simplified: just INSERT)
+  gsub( /REPLACE INTO/, "INSERT INTO" )
+  gsub( /replace into/, "INSERT INTO" )
+
+  # MySQL escape sequences
+  gsub( /\\\\/, "\\_" )
+  gsub( /\\'/, "''" )
+  gsub( /\\n/, "\n" )
+  gsub( /\\r/, "\r" )
+  gsub( /\\"/, "\"" )
+  gsub( /\\\032/, "\032" )
+  gsub( /\\_/, "\\" )
+
+  # Convert MySQL hex literals 0x... to PostgreSQL E'\\x...' is not needed
+  # as PostgreSQL also understands 0x format in numeric context
+
+  print
+  next
+}
+
+# print the CREATE line as is (with backtick conversion) and capture the table name
+/^(CREATE|create)/ {
+  if( match( $0, /`[^`]+/ ) ){
+    tableName = substr( $0, RSTART+1, RLENGTH-1 )
+  }
+  # Convert backticks to double quotes
+  gsub( /`/, "\"" )
+  # Remove IF NOT EXISTS for cleaner PG (optional, PG supports it)
+  aInc = 0
+  prev = ""
+  firstInTable = 1
+  print
+  next
+}
+
+# Replace FULLTEXT KEY (not supported in PG, skip or convert to regular index)
+/^  (FULLTEXT KEY|fulltext key)/ { gsub( /[A-Za-z ]+(KEY|key)/, "  KEY" ) }
+
+# Get rid of field lengths in KEY lines
+/ (PRIMARY |primary )?(KEY|key)/ { gsub( /\([0-9]+\)/, "" ) }
+
+# AUTO_INCREMENT with PRIMARY KEY - use SERIAL
+aInc == 1 && /PRIMARY KEY|primary key/ { next }
+
+# Remove COLLATE clauses
+/ (COLLATE|collate) [a-z0-9_]*/ { gsub( /(COLLATE|collate) [a-z0-9_]*/, "" ) }
+
+# Print all fields definition lines except the `KEY` lines.
+/^  / && !/^(  (KEY|key)|\);)/ {
+  # Convert backticks to double quotes
+  gsub( /`/, "\"" )
+
+  if( match( $0, /[^"`]AUTO_INCREMENT|auto_increment[^"`]/) ){
+    aInc = 1
+    # Replace the type + AUTO_INCREMENT with SERIAL
+    gsub( /[^ ]*(INT|int)[^ ]* *(NOT NULL *)?AUTO_INCREMENT|auto_increment/, "SERIAL PRIMARY KEY" )
+  }
+
+  gsub( /(UNIQUE KEY|unique key) (".*"|".*") /, "UNIQUE " )
+  gsub( /(CHARACTER SET|character set) [^ ]+[ ,]/, "" )
+
+  # Type conversions for PostgreSQL
+  # tinyint(1) -> SMALLINT
+  gsub( /tinyint\([0-9]+\)/, "SMALLINT" )
+  gsub( /TINYINT\([0-9]+\)/, "SMALLINT" )
+
+  # int(N) -> INTEGER
+  gsub( /int\([0-9]+\)/, "INTEGER" )
+  gsub( /INT\([0-9]+\)/, "INTEGER" )
+
+  # mediumint -> INTEGER
+  gsub( /mediumint\([0-9]+\)/, "INTEGER" )
+  gsub( /MEDIUMINT\([0-9]+\)/, "INTEGER" )
+
+  # smallint(N) -> SMALLINT
+  gsub( /smallint\([0-9]+\)/, "SMALLINT" )
+  gsub( /SMALLINT\([0-9]+\)/, "SMALLINT" )
+
+  # bigint(N) -> BIGINT
+  gsub( /bigint\([0-9]+\)/, "BIGINT" )
+  gsub( /BIGINT\([0-9]+\)/, "BIGINT" )
+
+  # float -> REAL
+  gsub( / float /, " REAL " )
+  gsub( / float,/, " REAL," )
+  gsub( / FLOAT /, " REAL " )
+  gsub( / FLOAT,/, " REAL," )
+
+  # double -> DOUBLE PRECISION
+  gsub( / double /, " DOUBLE PRECISION " )
+  gsub( / double,/, " DOUBLE PRECISION," )
+  gsub( / DOUBLE /, " DOUBLE PRECISION " )
+  gsub( / DOUBLE,/, " DOUBLE PRECISION," )
+
+  # decimal(M,N) -> NUMERIC(M,N)
+  gsub( /decimal/, "NUMERIC" )
+  gsub( /DECIMAL/, "NUMERIC" )
+
+  # longtext -> TEXT
+  gsub( /longtext/, "TEXT" )
+  gsub( /LONGTEXT/, "TEXT" )
+
+  # mediumtext -> TEXT
+  gsub( /mediumtext/, "TEXT" )
+  gsub( /MEDIUMTEXT/, "TEXT" )
+
+  # enum -> TEXT
+  gsub( /(ENUM|enum)[^)]+\)/, "TEXT" )
+
+  # set -> TEXT
+  gsub( /(SET|set)\([^)]+\)/, "TEXT" )
+
+  # Remove UNSIGNED
+  gsub( /UNSIGNED/, "" )
+  gsub( /unsigned/, "" )
+
+  # Remove _utf8mb3 prefix
+  gsub( /_utf8mb3/, "" )
+
+  # ON UPDATE CURRENT_TIMESTAMP -> remove (PG uses triggers for this)
+  gsub( /(ON|on) (UPDATE|update) (CURRENT_TIMESTAMP|current_timestamp)(\(\))?/, "" )
+
+  # DEFAULT CURRENT_TIMESTAMP
+  gsub( /(DEFAULT|default) (CURRENT_TIMESTAMP|current_timestamp)(\(\))?/, "DEFAULT CURRENT_TIMESTAMP" )
+
+  # Remove COLLATE in field definitions
+  gsub( /(COLLATE|collate) [^ ]+ /, "" )
+
+  # Remove USING BTREE and similar
+  gsub( / USING [^, ]+/, "" )
+
+  # Remove field comments
+  gsub( / (COMMENT|comment).+$/, "" )
+
+  # Get commas off end of line
+  gsub( /,.?$/, "" )
+
+  if( prev ){
+    if( firstInTable ){
+      print prev
+      firstInTable = 0
+    }
+    else {
+      print "," prev
+    }
+  }
+  else {
+    if( match( $1,
+        /(CONSTRAINT|constraint) ["].*["] (FOREIGN KEY|foreign key)/ ) ){
+      print ","
+    }
+  }
+  prev = $1
+}
+
+/ ENGINE| engine/ {
+  if( prev ){
+    if( firstInTable ){
+      print prev
+      firstInTable = 0
+    }
+    else {
+      print "," prev
+    }
+  }
+  prev=""
+  print ");"
+  next
+}
+
+# KEY lines -> CREATE INDEX statements for PostgreSQL
+/^(  (KEY|key)|\);)/ {
+  if( prev ){
+    if( firstInTable ){
+      print prev
+      firstInTable = 0
+    }
+    else {
+      print "," prev
+    }
+  }
+  prev = ""
+  if( $0 == ");" ){
+    print
+  }
+  else {
+    if( match( $0, /`[^`]+/ ) ){
+      indexName = substr( $0, RSTART+1, RLENGTH-1 )
+    }
+    if( match( $0, /\([^()]+/ ) ){
+      indexKey = substr( $0, RSTART+1, RLENGTH-1 )
+    }
+    # Convert backticks in index key columns
+    gsub( /`/, "\"", indexKey )
+    # idx_ prefix to avoid name clashes
+    key[tableName] = key[tableName] "CREATE INDEX \"idx_" \
+       tableName "_" indexName "\" ON \"" tableName "\" (" indexKey ");\n"
+  }
+}
+
+END {
+  if( no_END ){ exit 1 }
+  # print all KEY creation lines
+  for( table in key ){ printf key[table] }
+
+  print "COMMIT;"
+}

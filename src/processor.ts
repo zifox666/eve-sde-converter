@@ -597,6 +597,12 @@ export function convertToSqlite(mysqlDumpPath: string, sqlitePath: string, mysql
   execSync(command, { stdio: 'inherit' });
 }
 
+export function convertToPgsql(mysqlDumpPath: string, pgsqlPath: string, mysql2pgsqlPath: string): void {
+  const command = `awk -f ${mysql2pgsqlPath} ${mysqlDumpPath} > ${pgsqlPath}`;
+  console.log(command);
+  execSync(command, { stdio: 'inherit' });
+}
+
 export const tableMappings: Record<string, { files: string[]; fields: Array<string | { name: string; transform: (item: any, subItem?: any, fileName?: string) => any }>; expand?: string; filter?: (item: any) => boolean }> = {
   'agtAgents': {
     files: ['npcCharacters.jsonl'],
