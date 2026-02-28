@@ -284,7 +284,11 @@ function serializeSqlValue(value: SqlValue): string {
  * batch is capped by `maxContentLength` (bytes) to stay within MySQL's
  * max_allowed_packet limit.
  */
-export function serializeInsertRows(rows: InsertRow[], maxContentLength: number = 800 * 1024): string[] {
+export function serializeInsertRows(
+  rows: InsertRow[],
+  maxContentLength: number = 500 * 1024,
+  maxRowsPerBatch: number = 500,
+): string[] {
   if (rows.length === 0) return [];
 
   // Group rows by "table + columns" signature, preserving insertion order.
@@ -316,7 +320,7 @@ export function serializeInsertRows(rows: InsertRow[], maxContentLength: number 
       const valuePart = `(${row.values.map(serializeSqlValue).join(', ')})`;
       // separator: ',\n' = 2 bytes for all but the first entry
       const addLen = Buffer.byteLength(valuePart, 'utf8') + 2;
-      if (valueParts.length > 0 && currentLen + addLen > maxContentLength) {
+      if (valueParts.length > 0 && (currentLen + addLen > maxContentLength || valueParts.length >= maxRowsPerBatch)) {
         flush();
       }
       valueParts.push(valuePart);
