@@ -1071,7 +1071,7 @@ DROP TABLE IF EXISTS `invTypes`;
 CREATE TABLE `invTypes` (
   `typeID` int(11) NOT NULL,
   `groupID` int(11) DEFAULT NULL,
-  `typeName` varchar(100) DEFAULT NULL,
+  `typeName` varchar(255) DEFAULT NULL,
   `description` text DEFAULT NULL,
   `mass` double DEFAULT NULL,
   `volume` double DEFAULT NULL,

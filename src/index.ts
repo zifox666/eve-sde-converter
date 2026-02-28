@@ -9,7 +9,7 @@ import {
   unzipFile,
   generateMySqlDump,
   convertToSqlite,
-  convertToPgsql,
+  generatePgsqlDump,
   getChangeSummary
 } from './processor';
 
@@ -21,7 +21,7 @@ program
   .version('1.0.0');
 
 program.command('convert')
-  .description('Convert EVE SDE from JSONL to MySQL dump and SQLite')
+  .description('Convert EVE SDE from JSONL to MySQL/PgSQL dump and SQLite')
   .option('--local-zip <path>', 'Path to local ZIP file to use instead of downloading')
   .option('--unzipped-dir <path>', 'Path to unzipped directory to use instead of downloading and unzipping')
   .option('--table <tableName>', 'Process only the specified table')
@@ -79,15 +79,14 @@ program.command('convert')
       }
       fs.truncateSync(sqlitePath, 0); // Clear existing SQLite file if any
 
+      // Generate PostgreSQL dump directly
+      const pgsqlPath = path.join(__dirname, '..', 'output', 'sde-postgres.sql');
+
+      console.log('Generating PostgreSQL dump...');
+      generatePgsqlDump(schemaPath, unzippedDir, pgsqlPath, options.table);
+
       console.log('Converting to SQLite...');
       convertToSqlite(mysqlDumpPath, sqlitePath, mysql2sqlitePath);
-
-      // Convert to PostgreSQL
-      const pgsqlPath = path.join(__dirname, '..', 'output', 'sde-postgres.sql');
-      const mysql2pgsqlPath = path.join(__dirname, '..', 'utils', 'mysql2pgsql');
-
-      console.log('Converting to PostgreSQL...');
-      convertToPgsql(mysqlDumpPath, pgsqlPath, mysql2pgsqlPath);
 
       console.log('Conversion completed successfully!');
     } catch (error) {
