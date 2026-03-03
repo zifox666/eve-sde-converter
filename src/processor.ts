@@ -284,7 +284,11 @@ function serializeSqlValue(value: SqlValue): string {
  * batch is capped by `maxContentLength` (bytes) to stay within MySQL's
  * max_allowed_packet limit.
  */
-export function serializeInsertRows(rows: InsertRow[], maxContentLength: number = 800 * 1024): string[] {
+export function serializeInsertRows(
+  rows: InsertRow[],
+  maxContentLength: number = 500 * 1024,
+  maxRowsPerBatch: number = 500,
+): string[] {
   if (rows.length === 0) return [];
 
   // Group rows by "table + columns" signature, preserving insertion order.
@@ -316,7 +320,7 @@ export function serializeInsertRows(rows: InsertRow[], maxContentLength: number 
       const valuePart = `(${row.values.map(serializeSqlValue).join(', ')})`;
       // separator: ',\n' = 2 bytes for all but the first entry
       const addLen = Buffer.byteLength(valuePart, 'utf8') + 2;
-      if (valueParts.length > 0 && currentLen + addLen > maxContentLength) {
+      if (valueParts.length > 0 && (currentLen + addLen > maxContentLength || valueParts.length >= maxRowsPerBatch)) {
         flush();
       }
       valueParts.push(valuePart);
@@ -354,17 +358,18 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
         }
       }
     }
-    // Now deduplicate by itemName, keeping the one with smallest groupID
+    // Now deduplicate by itemName (case-insensitive, matching MySQL utf8_general_ci),
+    // keeping the one with smallest groupID
     const uniqueByName = new Map<string, {itemID: number, itemName: string, groupID: number}>();
     for (const entry of uniqueByID.values()) {
-      const itemName = entry.itemName;
-      if (uniqueByName.has(itemName)) {
-        const existing = uniqueByName.get(itemName)!;
+      const nameKey = entry.itemName.toLowerCase();
+      if (uniqueByName.has(nameKey)) {
+        const existing = uniqueByName.get(nameKey)!;
         if (entry.groupID < existing.groupID) {
-          uniqueByName.set(itemName, entry);
+          uniqueByName.set(nameKey, entry);
         }
       } else {
-        uniqueByName.set(itemName, entry);
+        uniqueByName.set(nameKey, entry);
       }
     }
     const rows: InsertRow[] = [];
