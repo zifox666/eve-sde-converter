@@ -1327,9 +1327,9 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       { name: 'effectCategory', transform: (item) => item.effectCategoryID ?? null },
       { name: 'preExpression', transform: (item) => null },
       { name: 'postExpression', transform: (item) => null },
-      { name: 'description', transform: (item) => null },
+      { name: 'description', transform: (item) => item.description?.en || null },
       'guid',
-      { name: 'iconID', transform: (item) => null },
+      { name: 'iconID', transform: (item) => item.iconID ?? null },
       'isOffensive',
       'isAssistance',
       'durationAttributeID',
@@ -1339,12 +1339,24 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       'falloffAttributeID',
       'disallowAutoRepeat',
       { name: 'published', transform: (item) => item.published ?? false },
-      { name: 'displayName', transform: (item) => null },
+      { name: 'displayName', transform: (item) => item.displayName?.en || null },
       'isWarpSafe',
       'rangeChance',
       'electronicChance',
       'propulsionChance',
-      'distribution'
+      'distribution',
+      { name: 'sfxName', transform: (item) => null },
+      'npcUsageChanceAttributeID',
+      'npcActivationChanceAttributeID',
+      'fittingUsageChanceAttributeID',
+      { name: 'modifierInfo', transform: (item) => {
+        if (!item.modifierInfo || !item.modifierInfo.length) return null;
+        // Serialize back to the original YAML list format used in the legacy SDE
+        return item.modifierInfo.map((m: Record<string, unknown>) => {
+          const entries = Object.entries(m);
+          return entries.map(([k, v], i) => (i === 0 ? `- ${k}: ${v}` : `  ${k}: ${v}`)).join('\n');
+        }).join('\n') + '\n';
+      }}
     ]
   },
   'eveGraphics': {
