@@ -1156,8 +1156,22 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
     fields: [
       { name: 'typeID', transform: (item) => item._key },
       { name: 'attributeID', transform: (item, subItem) => subItem?.attributeID },
-      { name: 'valueInt', transform: (item, subItem) => subItem?.value },
-      { name: 'valueFloat', transform: (item, subItem) => null }
+      {
+        name: 'valueInt',
+        transform: (item, subItem) => {
+          const v = subItem?.value;
+          if (v == null) return null;
+          return Number.isInteger(v) ? v : null;
+        }
+      },
+      {
+        name: 'valueFloat',
+        transform: (item, subItem) => {
+          const v = subItem?.value;
+          if (v == null) return null;
+          return Number.isInteger(v) ? null : v;
+        }
+      }
     ],
     expand: 'dogmaAttributes'
   },
