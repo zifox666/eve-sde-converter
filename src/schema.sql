@@ -147,100 +147,206 @@ LOCK TABLES `certCerts` WRITE;
 UNLOCK TABLES;
 
 --
+-- Table structure for table `certMasteries`
 --
 
+DROP TABLE IF EXISTS `certMasteries`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `certMasteries` (
+  `typeID` int(11) DEFAULT NULL,
+  `masteryLevel` int(11) DEFAULT NULL,
+  `certID` int(11) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `certMasteries`
 --
 
+LOCK TABLES `certMasteries` WRITE;
+/*!40000 ALTER TABLE `certMasteries` DISABLE KEYS */;
+/*!40000 ALTER TABLE `certMasteries` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
+-- Table structure for table `certSkills`
 --
 
+DROP TABLE IF EXISTS `certSkills`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `certSkills` (
+  `certID` int(11) DEFAULT NULL,
+  `skillID` int(11) DEFAULT NULL,
+  `certLevelInt` int(11) DEFAULT NULL,
+  `skillLevel` int(11) DEFAULT NULL,
+  `certLevelText` varchar(8) DEFAULT NULL,
+  KEY `ix_certSkills_skillID` (`skillID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `certSkills`
 --
 
+LOCK TABLES `certSkills` WRITE;
+/*!40000 ALTER TABLE `certSkills` DISABLE KEYS */;
+/*!40000 ALTER TABLE `certSkills` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
+-- Table structure for table `chrAncestries`
 --
 
+DROP TABLE IF EXISTS `chrAncestries`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `chrAncestries` (
+  `ancestryID` int(11) NOT NULL,
+  `ancestryName` varchar(100) DEFAULT NULL,
+  `bloodlineID` int(11) DEFAULT NULL,
+  `description` varchar(1000) DEFAULT NULL,
+  `perception` int(11) DEFAULT NULL,
+  `willpower` int(11) DEFAULT NULL,
+  `charisma` int(11) DEFAULT NULL,
+  `memory` int(11) DEFAULT NULL,
+  `intelligence` int(11) DEFAULT NULL,
+  `iconID` int(11) DEFAULT NULL,
+  `shortDescription` varchar(500) DEFAULT NULL,
+  PRIMARY KEY (`ancestryID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `chrAncestries`
 --
 
+LOCK TABLES `chrAncestries` WRITE;
+/*!40000 ALTER TABLE `chrAncestries` DISABLE KEYS */;
+/*!40000 ALTER TABLE `chrAncestries` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
+-- Table structure for table `chrAttributes`
 --
 
+DROP TABLE IF EXISTS `chrAttributes`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `chrAttributes` (
+  `attributeID` int(11) NOT NULL,
+  `attributeName` varchar(100) DEFAULT NULL,
+  `description` varchar(1000) DEFAULT NULL,
+  `iconID` int(11) DEFAULT NULL,
+  `shortDescription` varchar(500) DEFAULT NULL,
+  `notes` varchar(500) DEFAULT NULL,
+  PRIMARY KEY (`attributeID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `chrAttributes`
 --
 
+LOCK TABLES `chrAttributes` WRITE;
+/*!40000 ALTER TABLE `chrAttributes` DISABLE KEYS */;
+/*!40000 ALTER TABLE `chrAttributes` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
+-- Table structure for table `chrBloodlines`
 --
 
+DROP TABLE IF EXISTS `chrBloodlines`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `chrBloodlines` (
+  `bloodlineID` int(11) NOT NULL,
+  `bloodlineName` varchar(100) DEFAULT NULL,
+  `raceID` int(11) DEFAULT NULL,
+  `description` varchar(1000) DEFAULT NULL,
+  `maleDescription` varchar(1000) DEFAULT NULL,
+  `femaleDescription` varchar(1000) DEFAULT NULL,
+  `shipTypeID` int(11) DEFAULT NULL,
+  `corporationID` int(11) DEFAULT NULL,
+  `perception` int(11) DEFAULT NULL,
+  `willpower` int(11) DEFAULT NULL,
+  `charisma` int(11) DEFAULT NULL,
+  `memory` int(11) DEFAULT NULL,
+  `intelligence` int(11) DEFAULT NULL,
+  `iconID` int(11) DEFAULT NULL,
+  `shortDescription` varchar(500) DEFAULT NULL,
+  `shortMaleDescription` varchar(500) DEFAULT NULL,
+  `shortFemaleDescription` varchar(500) DEFAULT NULL,
+  PRIMARY KEY (`bloodlineID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `chrBloodlines`
 --
 
+LOCK TABLES `chrBloodlines` WRITE;
+/*!40000 ALTER TABLE `chrBloodlines` DISABLE KEYS */;
+/*!40000 ALTER TABLE `chrBloodlines` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
+-- Table structure for table `chrFactions`
 --
 
+DROP TABLE IF EXISTS `chrFactions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `chrFactions` (
+  `factionID` int(11) NOT NULL,
+  `factionName` varchar(100) DEFAULT NULL,
+  `description` varchar(2000) DEFAULT NULL,
+  `raceIDs` int(11) DEFAULT NULL,
+  `solarSystemID` int(11) DEFAULT NULL,
+  `corporationID` int(11) DEFAULT NULL,
+  `sizeFactor` float DEFAULT NULL,
+  `stationCount` int(11) DEFAULT NULL,
+  `stationSystemCount` int(11) DEFAULT NULL,
+  `militiaCorporationID` int(11) DEFAULT NULL,
+  `iconID` int(11) DEFAULT NULL,
+  PRIMARY KEY (`factionID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `chrFactions`
 --
 
+LOCK TABLES `chrFactions` WRITE;
+/*!40000 ALTER TABLE `chrFactions` DISABLE KEYS */;
+/*!40000 ALTER TABLE `chrFactions` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
+-- Table structure for table `crpActivities`
 --
 
+DROP TABLE IF EXISTS `crpActivities`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `crpActivities` (
+  `activityID` int(11) NOT NULL,
+  `activityName` varchar(100) DEFAULT NULL,
+  `description` varchar(1000) DEFAULT NULL,
+  PRIMARY KEY (`activityID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Dumping data for table `crpActivities`
 --
 
---
---
-
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
---
-
---
---
-
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
---
-
---
---
-
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
---
-
---
---
-
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
---
-
---
---
-
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
---
+LOCK TABLES `crpActivities` WRITE;
+/*!40000 ALTER TABLE `crpActivities` DISABLE KEYS */;
+/*!40000 ALTER TABLE `crpActivities` ENABLE KEYS */;
+UNLOCK TABLES;
 
 --
 -- Table structure for table `crpNPCCorporations`

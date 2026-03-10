@@ -614,6 +614,53 @@ export function processTable(tableName: string, unzippedDir: string): InsertRow[
       }
     }
     return rows;
+  } else if (tableName === 'certMasteries') {
+    // masteries.jsonl: _key = typeID, _value = [{_key: masteryLevel, _value: [certID, ...]}]
+    const rows: InsertRow[] = [];
+    for (const fileName of mapping.files) {
+      const filePath = path.join(unzippedDir, fileName);
+      if (!fs.existsSync(filePath)) { console.warn(`File ${filePath} does not exist, skipping.`); continue; }
+      for (const item of readJsonl(filePath)) {
+        const typeID: number = item._key;
+        if (!Array.isArray(item._value)) continue;
+        for (const masteryEntry of item._value) {
+          const masteryLevel: number = masteryEntry._key;
+          if (!Array.isArray(masteryEntry._value)) continue;
+          for (const certID of masteryEntry._value) {
+            rows.push({ table: 'certMasteries', columns: ['typeID', 'masteryLevel', 'certID'], values: [typeID, masteryLevel, certID] });
+          }
+        }
+      }
+    }
+    return rows;
+  } else if (tableName === 'certSkills') {
+    // certificates.jsonl: _key = certID, skillTypes = [{_key: skillID, basic, standard, improved, advanced, elite}]
+    const rows: InsertRow[] = [];
+    const levelMap: Array<{ name: keyof typeof levelInt; int: number; text: string }> = [
+      { name: 'basic',    int: 1, text: 'basic'    },
+      { name: 'standard', int: 2, text: 'standard' },
+      { name: 'improved', int: 3, text: 'improved' },
+      { name: 'advanced', int: 4, text: 'advanced' },
+      { name: 'elite',    int: 5, text: 'elite'    },
+    ];
+    const levelInt = { basic: 1, standard: 2, improved: 3, advanced: 4, elite: 5 };
+    for (const fileName of mapping.files) {
+      const filePath = path.join(unzippedDir, fileName);
+      if (!fs.existsSync(filePath)) { console.warn(`File ${filePath} does not exist, skipping.`); continue; }
+      for (const item of readJsonl(filePath)) {
+        const certID: number = item._key;
+        if (!Array.isArray(item.skillTypes)) continue;
+        for (const st of item.skillTypes) {
+          const skillID: number = st._key;
+          for (const lv of levelMap) {
+            const skillLevel: number = st[lv.name];
+            if (skillLevel == null || skillLevel === 0) continue;
+            rows.push({ table: 'certSkills', columns: ['certID', 'skillID', 'certLevelInt', 'skillLevel', 'certLevelText'], values: [certID, skillID, lv.int, skillLevel, lv.text] });
+          }
+        }
+      }
+    }
+    return rows;
   } else if (tableName === 'trnTranslationLanguages') {
     // Assign sequential numericLanguageID to each language
     const rows: InsertRow[] = [];
@@ -1314,6 +1361,88 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       { name: 'name', transform: (item) => item.name?.en || '' }
     ]
   },
+  'certMasteries': {
+    files: ['masteries.jsonl'],
+    fields: [] // Custom processing in processTable function
+  },
+  'certSkills': {
+    files: ['certificates.jsonl'],
+    fields: [] // Custom processing in processTable function
+  },
+  'chrAncestries': {
+    files: ['ancestries.jsonl'],
+    fields: [
+      { name: 'ancestryID', transform: (item: any) => item._key },
+      { name: 'ancestryName', transform: (item: any) => item.name?.en || '' },
+      'bloodlineID',
+      { name: 'description', transform: (item: any) => item.description?.en || null },
+      'perception',
+      'willpower',
+      'charisma',
+      'memory',
+      'intelligence',
+      'iconID',
+      { name: 'shortDescription', transform: (item: any) => item.shortDescription || null }
+    ]
+  },
+  'chrAttributes': {
+    files: ['characterAttributes.jsonl'],
+    fields: [
+      { name: 'attributeID', transform: (item: any) => item._key },
+      { name: 'attributeName', transform: (item: any) => item.name?.en || '' },
+      { name: 'description', transform: (item: any) => item.description || null },
+      'iconID',
+      { name: 'shortDescription', transform: (item: any) => item.shortDescription || null },
+      { name: 'notes', transform: (item: any) => item.notes || null }
+    ]
+  },
+  'chrBloodlines': {
+    files: ['bloodlines.jsonl'],
+    fields: [
+      { name: 'bloodlineID', transform: (item: any) => item._key },
+      { name: 'bloodlineName', transform: (item: any) => item.name?.en || '' },
+      'raceID',
+      { name: 'description', transform: (item: any) => item.description?.en || null },
+      { name: 'maleDescription', transform: (item: any) => null },
+      { name: 'femaleDescription', transform: (item: any) => null },
+      { name: 'shipTypeID', transform: (item: any) => item.shipTypeID ?? null },
+      'corporationID',
+      'perception',
+      'willpower',
+      'charisma',
+      'memory',
+      'intelligence',
+      'iconID',
+      { name: 'shortDescription', transform: (item: any) => item.shortDescription || null },
+      { name: 'shortMaleDescription', transform: (item: any) => null },
+      { name: 'shortFemaleDescription', transform: (item: any) => null }
+    ]
+  },
+  'chrFactions': {
+    files: ['factions.jsonl'],
+    fields: [
+      { name: 'factionID', transform: (item: any) => item._key },
+      { name: 'factionName', transform: (item: any) => item.name?.en || '' },
+      { name: 'description', transform: (item: any) => item.description?.en || null },
+      { name: 'raceIDs', transform: (item: any) => Array.isArray(item.memberRaces) && item.memberRaces.length > 0 ? item.memberRaces[0] : null },
+      'solarSystemID',
+      'corporationID',
+      'sizeFactor',
+      { name: 'stationCount', transform: (item: any) => item.stationCount ?? null },
+      { name: 'stationSystemCount', transform: (item: any) => item.stationSystemCount ?? null },
+      'militiaCorporationID',
+      'iconID'
+    ]
+  },
+  'crpActivities': {
+    files: ['corporationActivities.jsonl'],
+    fields: [
+      { name: 'activityID', transform: (item: any) => item._key },
+      { name: 'activityName', transform: (item: any) => item.name?.en || '' },
+      { name: 'description', transform: (item: any) => null }
+    ]
+  },
+
   'dgmAttributeCategories': {
     files: ['dogmaAttributeCategories.jsonl'],
     fields: [
@@ -1612,7 +1741,7 @@ export const tableMappings: Record<string, { files: string[]; fields: Array<stri
       { name: 'typeID', transform: (item: any, subItem: any) => subItem?.typeID }
     ],
     expand: 'skills',
-    filter: (item: any) => Array.isArray(item.skills) && item.skills.length > 0
+    filter: (item: any) => item.agent != null && Array.isArray(item.skills) && item.skills.length > 0
   },
   'crpNPCDivisions': {
     files: ['npcCorporationDivisions.jsonl'],
